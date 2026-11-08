@@ -1,0 +1,7 @@
+services:
+  maas-cost:
+    build: .
+    env_file: .env
+    ports:
+      - "8765:8765"
+    restart: unless-stopped
