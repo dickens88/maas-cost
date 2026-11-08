@@ -1,8 +1,40 @@
+# Secrets / local config
 .env
+
+# Runtime data
 data/
+
+# Python
 backend/.venv/
+.venv/
+venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Tests
+tests/
+backend/tests/
+
+# Frontend
 frontend/node_modules/
 frontend/dist/
+node_modules/
+dist/
+
+# Logs
 *.log
+npm-debug.log*
+
+# Tooling / editor / OS
+.playwright-mcp/
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

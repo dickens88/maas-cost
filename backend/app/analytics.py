@@ -2,6 +2,7 @@ import datetime as dt
 from collections import defaultdict
 
 from app import config, live
+from app.hwclient import HwApiError
 from app.live import UNATTRIBUTED
 
 UNATTRIBUTED_NAME = "未归属（在线体验 + 无标签 Key）"
@@ -58,10 +59,11 @@ def overview(start, end, model=None):
     items = [it for v in data.values() for it in _keep(v, model)]
     cur = summarize(items)
     prev = None
-    span = e - s
+    # Shift by whole days so a range ending "now" compares to the same time of day
+    shift = dt.timedelta(days=(end - start).days + 1)
     # Previous period is only comparable when it is still retained
-    if s - span >= live.open_end() - live.MAX_SPAN:
-        prev = summarize(_keep(live.window(s - span, s), model))
+    if s - shift >= live.open_end() - live.MAX_SPAN:
+        prev = summarize(_keep(live.window(s - shift, e - shift), model))
     un = summarize(_keep(data[UNATTRIBUTED], model))
     return {
         "current": cur, "previous": prev,
@@ -167,7 +169,8 @@ def model_ranking(start, end, label=None):
             groups[it["service_name"]].append(it)
             if it.get("request_count"):
                 users[it["service_name"]].add(lb)
-    out = [{"key": m, "generation_type": items[0].get("generation_type"), "keys": len(users[m]), **summarize(items)}
+    out = [{"key": m, "service_id": items[0].get("service_id"), "generation_type": items[0].get("generation_type"),
+            "keys": len(users[m]), **summarize(items)}
            for m, items in groups.items()]
     out.sort(key=lambda x: (-x["total_kt"], -x["requests"]))
     return [x for x in out if x["requests"]]
@@ -183,3 +186,64 @@ def matrix(start, end, model=None):
                             "model": it["service_name"], "total_kt": it.get("total_token") or 0,
                             "requests": it.get("request_count") or 0})
     return out
+
+
+def ip_ranking(start, end, label=None, model=None):
+    """Usage per client source IP; one statistics call per IP, so scope by label when possible."""
+    s, e = utc_range(start, end)
+    ips = live.source_ips(s, e, label)
+    results = live.windows([(s, e, label, ip) for ip in ips])
+    rows = []
+    for ip, items in zip(ips, results):
+        items = _keep(items, model)
+        summ = summarize(items)
+        if not summ["requests"]:
+            continue
+        top = max(items, key=lambda it: it.get("total_token") or 0)
+        # Errors often come from a model with no tokens (failed calls), so name it separately
+        worst = max(items, key=lambda it: it.get("error_count") or 0)
+        rows.append({"key": ip, **summ, "top_model": top["service_name"],
+                     "models": sum(1 for it in items if it.get("request_count")),
+                     "top_error_model": worst["service_name"] if summ["errors"] else None,
+                     "top_error_count": int(worst.get("error_count") or 0) if summ["errors"] else 0})
+    grand = sum(r["total_kt"] for r in rows)
+    for r in rows:
+        r["token_share"] = r["total_kt"] / grand if grand else 0
+    rows.sort(key=lambda x: (-x["total_kt"], -x["requests"]))
+    return rows
+
+
+# IANA zone for the display offset; Etc/GMT signs are inverted
+MAAS_TZ = "Asia/Shanghai" if config.TZ_OFFSET_HOURS == 8 else f"Etc/GMT{-config.TZ_OFFSET_HOURS:+d}"
+MAX_MINUTE_HOUR_SPAN = dt.timedelta(days=2)
+
+
+def error_codes(start, end, service_id):
+    """Error-code distribution of one model; MaaS only serves it for currently subscribed services."""
+    s, e = utc_range(start, end)
+    if service_id not in live.service_ids():
+        return {"available": False}
+    # MaaS: up to 2 days allows hour granularity, longer ranges only day
+    hourly = e - s <= MAX_MINUTE_HOUR_SPAN
+    try:
+        d = live.error_chart(service_id, s, e, 2 if hourly else 3, MAAS_TZ)
+    except HwApiError as ex:
+        # ModelArts.6214: service taken offline after the service list was cached
+        if "ModelArts.6214" in str(ex):
+            return {"available": False}
+        raise
+    codes = (d.get("list_4xx") or []) + (d.get("list_5xx") or [])
+    stamps = sorted({p["time"] for c in codes for p in c.get("list") or []})
+    fmt = "%m-%d %H:00" if hourly else "%m-%d"
+    axis = [(dt.datetime.fromtimestamp(t / 1000, dt.timezone.utc).replace(tzinfo=None) + TZ).strftime(fmt) for t in stamps]
+    pos = {t: i for i, t in enumerate(stamps)}
+    series = []
+    for c in codes:
+        data = [0] * len(stamps)
+        for p in c.get("list") or []:
+            data[pos[p["time"]]] += p.get("count") or 0
+        if sum(data):
+            series.append({"code": c["error_code"], "total": sum(data), "data": data})
+    series.sort(key=lambda x: x["code"])
+    return {"available": True, "granularity": "hour" if hourly else "day", "axis": axis,
+            "series": series, "total": d.get("total") or 0}

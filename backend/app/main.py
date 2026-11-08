@@ -2,7 +2,7 @@ import datetime as dt
 import logging
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Path
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -13,8 +13,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 app = FastAPI(title="MaaS Token Usage")
 
 
+def _today():
+    return (analytics.live.utcnow() + analytics.TZ).date()
+
+
 def _range(start: dt.date | None, end: dt.date | None):
-    today = (analytics.live.utcnow() + analytics.TZ).date()
+    today = _today()
     end = end or today
     start = start or end - dt.timedelta(days=6)
     if start > end:
@@ -29,6 +33,12 @@ def _run(fn, *args, **kwargs):
         raise HTTPException(400, str(e)) from e
     except HwApiError as e:
         raise HTTPException(502, f"MaaS API error: {e}") from e
+
+
+@app.get("/api/meta")
+def get_meta():
+    """Dates are business days in TZ_OFFSET_HOURS; the browser must not use its own timezone."""
+    return {"today": _today(), "tz_offset_hours": config.TZ_OFFSET_HOURS}
 
 
 @app.get("/api/overview")
@@ -49,9 +59,21 @@ def get_key_usage(start: dt.date | None = None, end: dt.date | None = None, mode
     return _run(analytics.key_ranking, *_range(start, end), model or None)
 
 
+@app.get("/api/usage/ips")
+def get_ip_usage(start: dt.date | None = None, end: dt.date | None = None,
+                 label: str | None = None, model: str | None = None):
+    return _run(analytics.ip_ranking, *_range(start, end), label, model or None)
+
+
 @app.get("/api/usage/models")
 def get_model_usage(start: dt.date | None = None, end: dt.date | None = None, label: str | None = None):
     return _run(analytics.model_ranking, *_range(start, end), label)
+
+
+@app.get("/api/models/{service_id}/error-codes")
+def get_error_codes(service_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+                    start: dt.date | None = None, end: dt.date | None = None):
+    return _run(analytics.error_codes, *_range(start, end), service_id)
 
 
 @app.get("/api/usage-matrix")

@@ -40,13 +40,13 @@ export function fmtMetric(metric, v) {
   return metric === 'tokens' ? fmtTokens(v) : fmtInt(v)
 }
 
-export function localDate(d = new Date()) {
-  const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-  return z.toISOString().slice(0, 10)
+// Business dates follow the backend's TZ_OFFSET_HOURS (Beijing), never the browser timezone
+export function bizToday(offsetHours) {
+  return new Date(Date.now() + offsetHours * 3600000).toISOString().slice(0, 10)
 }
 
 export function addDays(iso, n) {
-  const d = new Date(iso + 'T00:00:00')
-  d.setDate(d.getDate() + n)
-  return localDate(d)
+  const d = new Date(iso + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
 }

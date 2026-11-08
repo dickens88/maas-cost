@@ -4,11 +4,13 @@ import { api, fmtInt, fmtMetric, fmtPct, fmtTokens, qs } from '../api'
 import EChart from './EChart.vue'
 import SkeletonChart from './SkeletonChart.vue'
 import SkeletonRows from './SkeletonRows.vue'
+import ModelDrawer from './ModelDrawer.vue'
 
 const props = defineProps({ filters: Object, metric: String })
 const models = ref([])
 const cells = ref([])
 const loading = ref(false)
+const detail = ref(null)
 const field = computed(() => (props.metric === 'tokens' ? 'total_kt' : 'requests'))
 
 async function load() {
@@ -74,7 +76,7 @@ const heatOption = computed(() => {
     </div>
   </div>
   <div class="card block scroll-x">
-    <h3>模型明细</h3>
+    <h3>模型明细 <span class="sub">点击模型名查看错误码时间分布</span></h3>
     <table>
       <thead>
         <tr>
@@ -85,7 +87,7 @@ const heatOption = computed(() => {
       <tbody>
         <SkeletonRows v-if="loading" :rows="6" :cols="10" />
         <tr v-for="m in active" v-else :key="m.key">
-          <td>{{ m.key }}</td>
+          <td><a class="link" href="#" @click.prevent="detail = m">{{ m.key }}</a></td>
           <td class="muted">{{ m.generation_type }}</td>
           <td class="num">{{ fmtTokens(m.total_kt) }}</td>
           <td class="num">{{ fmtInt(m.requests) }}</td>
@@ -99,10 +101,13 @@ const heatOption = computed(() => {
       </tbody>
     </table>
   </div>
+  <ModelDrawer v-if="detail" :item="detail" :filters="filters" @close="detail = null" />
 </template>
 
 <style scoped>
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; margin-bottom: 12px; }
 .block { margin-bottom: 12px; }
+.link { color: var(--pri); text-decoration: none; }
+.link:hover { text-decoration: underline; }
 @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
 </style>

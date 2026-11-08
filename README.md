@@ -27,11 +27,16 @@ AK/SK 对应的 IAM 用户需要 ModelArts MaaS 监控只读与 `modelarts:apiKe
 
 | 页面区块 | 调用的接口 | 每次调用数 |
 |---|---|---|
-| KPI、Key 排行、模型分布、Key × 模型 | 每个 Key 标签 + `""` 各一次 `list-service-statistics` | Key 数 + 1（共用缓存） |
+| KPI、API Key 视图、模型视图（切到该页签才加载） | 每个 Key 标签 + `""` 各一次 `list-service-statistics` | Key 数 + 1（共用缓存） |
 | KPI 环比 | 上一周期全量一次 | 1 |
 | 趋势（按模型堆叠） | 每个时间桶一次 | 小时 ≤ 48 / 天 ≤ 30 / 周 ≤ 5 |
 | Key 明细抽屉的趋势 | 每个时间桶带该标签一次 | 同上 |
+| IP 视图（切到该页签才加载） | `source-ips` 分页取 IP，再每个 IP 一次 | IP 数 + 1（近 7 天约 120+，冷启动 30–60 秒） |
+| 模型抽屉的错误码分布（点击模型名） | `error-code-chart` 一次 + `list-services`（缓存 1 小时） | 1，且 MaaS 限 **20 秒 1 次**，后端单独排队 |
+| Key 明细抽屉的来源 IP | `source-ips` 按该标签取 IP，再每个 IP 带标签一次 | 该 Key 的 IP 数 + 1；未归属桶 IP 很多，点击展开才加载 |
 
+- 日期一律按北京时间（`TZ_OFFSET_HOURS`，默认 8）切分，前端的"今天"取自后端，与浏览器时区无关。
+- 环比：上一周期整体前移相同天数，"今天"对比昨天同一时段（00:00 到此刻）。
 - 只能查最近 30 天（MaaS 保留约 31 天，跨度 > 30 天会被拒绝）；上一周期超出保留期时环比显示"超出保留期"。
 - 趋势不按 Key 堆叠：每个 Key 每个时间桶都要单独调用，30 天 × N 个 Key 会超过 200 次/分钟限流。
 - 缓存：包含"现在"的窗口缓存 5 分钟（结束时间取整到 5 分钟，看到的数据最多晚 5 分钟），已结束超过 1 小时的窗口缓存 1 小时。重启即清空。
@@ -46,6 +51,9 @@ AK/SK 对应的 IAM 用户需要 ModelArts MaaS 监控只读与 `modelarts:apiKe
 - 时间窗口可任意切分且严格可加（分钟级聚合），最近 1 分钟内的调用即可查到。
 - `api_keys` 只认标签；按 Key ID 查**返回 200 且为 0**，不会报错。
 - Σ 各标签 + `""` = 全量。`""` 包含在线体验 **以及所有未设置标签的 Key**，无法再拆。
+- `source-ips`（查询 IP 列表）文档写仅支持香港，实测西南-贵阳一可用；支持 `api_keys` 按标签筛选，`limit` 最大 100 需分页。
+- `list-service-statistics` 的 `ips` 最多 100 个；只返回合计，不能按 IP 分组，所以按 IP 统计只能每个 IP 调一次。Σ 各 IP = 全量，`ips` 与 `api_keys` 可组合。
+- `error-code-chart`（错误码时间分布）文档写仅支持香港，实测贵阳一可用；`service_id` 取自统计接口即可，但**已下线 / 退订的模型返回 400 `ModelArts.6214`**，所以先用 `list-services` 判断。粒度：≤ 2 天可按小时，3–30 天只能按天；`timezone` 决定按天分桶的边界。
 - `show-statistics` 默认只统计 Text Generation，不含 Rerank / Embedding 等。
 - 限流：统计接口 200 次/分钟/用户（429 返回 `limit:200,time:1 minute`）；`show-detail-chart` 为 20 秒 1 次。
 
@@ -53,10 +61,13 @@ AK/SK 对应的 IAM 用户需要 ModelArts MaaS 监控只读与 `modelarts:apiKe
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
+| GET | `/api/meta` | 无，返回北京时间的 `today` 与 `tz_offset_hours` |
 | GET | `/api/overview` | `start`、`end`、`model` |
 | GET | `/api/trend` | `start`、`end`、`granularity=hour\|day\|week`、`metric=tokens\|requests`、`label`、`model` |
 | GET | `/api/usage/keys` | `start`、`end`、`model` |
+| GET | `/api/usage/ips` | `start`、`end`、`label`、`model` |
 | GET | `/api/usage/models` | `start`、`end`、`label` |
+| GET | `/api/models/{service_id}/error-codes` | `start`、`end`；模型已下线时返回 `available: false` |
 | GET | `/api/usage-matrix` | `start`、`end`、`model` |
 
 `start`/`end` 为本地日期（含），默认近 7 天；`label=""` 表示未归属桶。超出 30 天返回 400，MaaS 出错返回 502。

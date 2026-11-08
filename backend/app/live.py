@@ -92,12 +92,28 @@ def labels():
     return sorted({k["label"] for k in api_keys() if k.get("label")}) + [UNATTRIBUTED]
 
 
-def _fetch(start, end, label):
-    return client.service_statistics(to_ms(start), to_ms(end), None if label is None else [label])
+def _fetch(start, end, label, ip=None):
+    return client.service_statistics(to_ms(start), to_ms(end), None if label is None else [label],
+                                     None if ip is None else [ip])
+
+
+def service_ids():
+    return {s["service_id"] for s in cached(("services",), config.CACHE_TTL_CLOSED_SEC, client.list_services)}
+
+
+def error_chart(service_id, start, end, granularity, timezone):
+    return cached(("errchart", service_id, start, end, granularity), _ttl(end),
+                  lambda: client.error_code_chart(service_id, to_ms(start), to_ms(end), granularity, timezone))
+
+
+def source_ips(start, end, label=None):
+    """IPs that called in [start, end), optionally only through one key label."""
+    return cached(("ips", start, end, label), _ttl(end),
+                  lambda: client.source_ips(to_ms(start), to_ms(end), None if label is None else [label]))
 
 
 def windows(specs):
-    """Fetch (start, end, label) windows; pool workers only run calls this request owns, never wait."""
+    """Fetch (start, end, label[, ip]) windows; pool workers only run calls this request owns, never wait."""
     out, owned, waiting = [None] * len(specs), [], []
     for i, spec in enumerate(specs):
         state, v = _claim(("win", *spec))

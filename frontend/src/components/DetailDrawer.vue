@@ -3,6 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { api, fmtInt, fmtPct, fmtTokens, qs } from '../api'
 import TrendChart from './TrendChart.vue'
 import SkeletonRows from './SkeletonRows.vue'
+import IpTable from './IpTable.vue'
 
 const props = defineProps({ item: Object, filters: Object, metric: String })
 const emit = defineEmits(['close'])
@@ -60,6 +61,7 @@ function onKey(e) { if (e.key === 'Escape') emit('close') }
           <tr v-if="!loadingModels && !models.length"><td colspan="5" class="empty">没有数据</td></tr>
         </tbody>
       </table>
+      <IpTable :filters="scoped" :metric="metric" :label="item.key" />
     </aside>
   </div>
 </template>

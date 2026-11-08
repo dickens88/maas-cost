@@ -47,10 +47,11 @@ def sign_request(method, url, headers, payload, ak, sk, now=None):
 
 
 class RateLimiter:
-    """Sliding one-minute window shared by all threads."""
+    """Sliding window (default one minute) shared by all threads."""
 
-    def __init__(self, per_min):
+    def __init__(self, per_min, window=60):
         self.per_min = per_min
+        self.window = window
         self.calls = []
         self.lock = threading.Lock()
 
@@ -58,15 +59,17 @@ class RateLimiter:
         while True:
             with self.lock:
                 now = time.monotonic()
-                self.calls = [c for c in self.calls if now - c < 60]
+                self.calls = [c for c in self.calls if now - c < self.window]
                 if len(self.calls) < self.per_min:
                     self.calls.append(now)
                     return
-                wait = 60 - (now - self.calls[0])
+                wait = self.window - (now - self.calls[0])
             time.sleep(max(wait, 0.05))
 
 
 _limiter = RateLimiter(config.RATE_LIMIT_PER_MIN)
+# error-code-chart allows one call per 20 s per user; keep a second of margin
+_error_chart_limiter = RateLimiter(1, 21)
 
 
 class MaasClient:
@@ -79,10 +82,10 @@ class MaasClient:
         self.calls = 0
         self._calls_lock = threading.Lock()
 
-    def _request(self, method, url, body=None, retries=3):
+    def _request(self, method, url, body=None, retries=3, limiter=None, wait_429=60):
         payload = json.dumps(body, ensure_ascii=False).encode() if body is not None else b""
         for attempt in range(retries + 1):
-            self.limiter.acquire()
+            (limiter or self.limiter).acquire()
             headers = sign_request(method, url, {"content-type": "application/json"}, payload, self.ak, self.sk)
             with self._calls_lock:
                 self.calls += 1
@@ -97,7 +100,7 @@ class MaasClient:
             if r.status_code == 429 or r.status_code >= 500:
                 if attempt == retries:
                     raise HwApiError(r.status_code, r.text)
-                wait = 60 if r.status_code == 429 else 5 * (attempt + 1)
+                wait = wait_429 if r.status_code == 429 else 5 * (attempt + 1)
                 log.warning("HTTP %s from %s, retry in %ss: %s", r.status_code, url, wait, r.text[:200])
                 time.sleep(wait)
                 continue
@@ -128,10 +131,43 @@ class MaasClient:
             if not page or offset >= total:
                 return items
 
-    def service_statistics(self, start_ms, end_ms, api_keys=None):
-        """Per-service usage in [start, end); api_keys=None means all callers."""
+    def service_statistics(self, start_ms, end_ms, api_keys=None, ips=None):
+        """Per-service usage in [start, end); api_keys/ips=None means no filter (ips: at most 100)."""
         body = {"service_type": 2, "start_time": start_ms, "end_time": end_ms, "infer_type": "real_time"}
         if api_keys is not None:
             body["api_keys"] = api_keys
+        if ips is not None:
+            body["ips"] = ips
         d = self._request("POST", self._mon("/list-service-statistics"), body)
         return d.get("items") or []
+
+    def source_ips(self, start_ms, end_ms, api_keys=None):
+        """Client source IPs that made calls in [start, end); docs say Hong Kong only but cn-southwest-2 works."""
+        items = []
+        while True:
+            body = {"service_type": 2, "limit": 100, "offset": len(items), "start_time": start_ms, "end_time": end_ms}
+            if api_keys is not None:
+                body["api_keys"] = api_keys
+            d = self._request("POST", self._mon("/source-ips"), body)
+            page = d.get("items") or []
+            items.extend(page)
+            if not page or len(items) >= (d.get("total") or 0):
+                return items
+
+    def list_services(self):
+        """Services currently subscribed; models only seen in statistics may have been taken offline."""
+        items = []
+        while True:
+            body = {"service_type": 2, "limit": 100, "offset": len(items)}
+            d = self._request("POST", self._mon("/list-services"), body)
+            page = d.get("items") or []
+            items.extend(page)
+            if not page or len(items) >= (d.get("total") or 0):
+                return items
+
+    def error_code_chart(self, service_id, start_ms, end_ms, granularity, timezone):
+        """Error counts per code over time; granularity 1=minute, 2=hour, 3=day."""
+        body = {"service_type": 2, "start_time": start_ms, "end_time": end_ms, "timezone": timezone,
+                "time_granularity": granularity, "infer_type": "real_time"}
+        return self._request("POST", self._mon(f"/{service_id}/error-code-chart"), body,
+                             limiter=_error_chart_limiter, wait_429=21)
