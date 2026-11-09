@@ -215,27 +215,41 @@ def ip_ranking(start, end, label=None, model=None):
 
 # IANA zone for the display offset; Etc/GMT signs are inverted
 MAAS_TZ = "Asia/Shanghai" if config.TZ_OFFSET_HOURS == 8 else f"Etc/GMT{-config.TZ_OFFSET_HOURS:+d}"
+# MaaS chart APIs: up to 2 days allows minute/hour granularity, up to 7 days hour/day, longer only day
 MAX_MINUTE_HOUR_SPAN = dt.timedelta(days=2)
+MAX_HOUR_DAY_SPAN = dt.timedelta(days=7)
+GRANULARITY = {1: ("minute", "%m-%d %H:%M"), 2: ("hour", "%m-%d %H:00"), 3: ("day", "%m-%d")}
+
+
+def _chart(service_id, fetch):
+    """Run a per-service chart call; None when MaaS no longer serves the model (offline / unsubscribed)."""
+    if service_id not in live.service_ids():
+        return None
+    try:
+        return fetch()
+    except HwApiError as ex:
+        # ModelArts.6214: service taken offline after the service list was cached
+        if "ModelArts.6214" in str(ex):
+            return None
+        raise
+
+
+def _axis(stamps, granularity):
+    fmt = GRANULARITY[granularity][1]
+    return [(dt.datetime.fromtimestamp(t / 1000, dt.timezone.utc).replace(tzinfo=None) + TZ).strftime(fmt) for t in stamps]
 
 
 def error_codes(start, end, service_id):
     """Error-code distribution of one model; MaaS only serves it for currently subscribed services."""
     s, e = utc_range(start, end)
-    if service_id not in live.service_ids():
-        return {"available": False}
-    # MaaS: up to 2 days allows hour granularity, longer ranges only day
     hourly = e - s <= MAX_MINUTE_HOUR_SPAN
-    try:
-        d = live.error_chart(service_id, s, e, 2 if hourly else 3, MAAS_TZ)
-    except HwApiError as ex:
-        # ModelArts.6214: service taken offline after the service list was cached
-        if "ModelArts.6214" in str(ex):
-            return {"available": False}
-        raise
+    gran = 2 if hourly else 3
+    d = _chart(service_id, lambda: live.error_chart(service_id, s, e, gran, MAAS_TZ))
+    if d is None:
+        return {"available": False}
     codes = (d.get("list_4xx") or []) + (d.get("list_5xx") or [])
     stamps = sorted({p["time"] for c in codes for p in c.get("list") or []})
-    fmt = "%m-%d %H:00" if hourly else "%m-%d"
-    axis = [(dt.datetime.fromtimestamp(t / 1000, dt.timezone.utc).replace(tzinfo=None) + TZ).strftime(fmt) for t in stamps]
+    axis = _axis(stamps, gran)
     pos = {t: i for i, t in enumerate(stamps)}
     series = []
     for c in codes:
@@ -247,3 +261,21 @@ def error_codes(start, end, service_id):
     series.sort(key=lambda x: x["code"])
     return {"available": True, "granularity": "hour" if hourly else "day", "axis": axis,
             "series": series, "total": d.get("total") or 0}
+
+
+def model_rates(start, end, service_id):
+    """RPM / TPM over time for one model. Minute buckets give true per-minute values;
+    hour/day buckets are averages per minute within the bucket (MaaS has no peak there)."""
+    s, e = utc_range(start, end)
+    span = e - s
+    gran = 1 if span <= MAX_MINUTE_HOUR_SPAN else 2 if span <= MAX_HOUR_DAY_SPAN else 3
+    items = _chart(service_id, lambda: live.detail_chart(service_id, s, e, gran, MAAS_TZ))
+    if items is None:
+        return {"available": False}
+    items = sorted(items, key=lambda x: x["time"])
+    rpm = [round(x.get("rpm") or 0, 2) for x in items]
+    tpm = [round(x.get("tpm") or 0, 3) for x in items]
+    mean = lambda v: sum(v) / len(v) if v else 0
+    return {"available": True, "granularity": GRANULARITY[gran][0], "axis": _axis([x["time"] for x in items], gran),
+            "rpm": rpm, "tpm": tpm, "peak_rpm": max(rpm, default=0), "peak_tpm": max(tpm, default=0),
+            "avg_rpm": round(mean(rpm), 2), "avg_tpm": round(mean(tpm), 3)}

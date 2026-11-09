@@ -32,6 +32,7 @@ AK/SK 对应的 IAM 用户需要 ModelArts MaaS 监控只读与 `modelarts:apiKe
 | 趋势（按模型堆叠） | 每个时间桶一次 | 小时 ≤ 48 / 天 ≤ 30 / 周 ≤ 5 |
 | Key 明细抽屉的趋势 | 每个时间桶带该标签一次 | 同上 |
 | IP 视图（切到该页签才加载） | `source-ips` 分页取 IP，再每个 IP 一次 | IP 数 + 1（近 7 天约 120+，冷启动 30–60 秒） |
+| 模型抽屉的 RPM / TPM 曲线（点击模型名） | `show-detail-chart` 一次 | 1，MaaS 限 **20 秒 1 次**（与错误码接口额度独立，两者并行） |
 | 模型抽屉的错误码分布（点击模型名） | `error-code-chart` 一次 + `list-services`（缓存 1 小时） | 1，且 MaaS 限 **20 秒 1 次**，后端单独排队 |
 | Key 明细抽屉的来源 IP | `source-ips` 按该标签取 IP，再每个 IP 带标签一次 | 该 Key 的 IP 数 + 1；未归属桶 IP 很多，点击展开才加载 |
 
@@ -54,6 +55,7 @@ AK/SK 对应的 IAM 用户需要 ModelArts MaaS 监控只读与 `modelarts:apiKe
 - `source-ips`（查询 IP 列表）文档写仅支持香港，实测西南-贵阳一可用；支持 `api_keys` 按标签筛选，`limit` 最大 100 需分页。
 - `list-service-statistics` 的 `ips` 最多 100 个；只返回合计，不能按 IP 分组，所以按 IP 统计只能每个 IP 调一次。Σ 各 IP = 全量，`ips` 与 `api_keys` 可组合。
 - `error-code-chart`（错误码时间分布）文档写仅支持香港，实测贵阳一可用；`service_id` 取自统计接口即可，但**已下线 / 退订的模型返回 400 `ModelArts.6214`**，所以先用 `list-services` 判断。粒度：≤ 2 天可按小时，3–30 天只能按天；`timezone` 决定按天分桶的边界。
+- `show-detail-chart` 每个时间桶直接返回 `rpm` / `tpm`（tpm 单位千 tokens/分钟）。分钟粒度时 rpm = 该分钟请求数（≤ 2 天可用，是真实峰值）；小时 / 天粒度时是桶内**每分钟平均值**，`rpm_list` 也只有这个均值，拿不到桶内峰值。Σ 请求数与 `list-service-statistics` 完全一致。
 - `show-statistics` 默认只统计 Text Generation，不含 Rerank / Embedding 等。
 - 限流：统计接口 200 次/分钟/用户（429 返回 `limit:200,time:1 minute`）；`show-detail-chart` 为 20 秒 1 次。
 
@@ -67,6 +69,7 @@ AK/SK 对应的 IAM 用户需要 ModelArts MaaS 监控只读与 `modelarts:apiKe
 | GET | `/api/usage/keys` | `start`、`end`、`model` |
 | GET | `/api/usage/ips` | `start`、`end`、`label`、`model` |
 | GET | `/api/usage/models` | `start`、`end`、`label` |
+| GET | `/api/models/{service_id}/rates` | `start`、`end`；≤ 2 天按分钟、≤ 7 天按小时、更长按天 |
 | GET | `/api/models/{service_id}/error-codes` | `start`、`end`；模型已下线时返回 `available: false` |
 | GET | `/api/usage-matrix` | `start`、`end`、`model` |
 

@@ -76,6 +76,12 @@ def get_error_codes(service_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
     return _run(analytics.error_codes, *_range(start, end), service_id)
 
 
+@app.get("/api/models/{service_id}/rates")
+def get_model_rates(service_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+                    start: dt.date | None = None, end: dt.date | None = None):
+    return _run(analytics.model_rates, *_range(start, end), service_id)
+
+
 @app.get("/api/usage-matrix")
 def get_matrix(start: dt.date | None = None, end: dt.date | None = None, model: str | None = None):
     return _run(analytics.matrix, *_range(start, end), model or None)

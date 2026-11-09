@@ -106,6 +106,11 @@ def error_chart(service_id, start, end, granularity, timezone):
                   lambda: client.error_code_chart(service_id, to_ms(start), to_ms(end), granularity, timezone))
 
 
+def detail_chart(service_id, start, end, granularity, timezone):
+    return cached(("detail", service_id, start, end, granularity), _ttl(end),
+                  lambda: client.detail_chart(service_id, to_ms(start), to_ms(end), granularity, timezone))
+
+
 def source_ips(start, end, label=None):
     """IPs that called in [start, end), optionally only through one key label."""
     return cached(("ips", start, end, label), _ttl(end),

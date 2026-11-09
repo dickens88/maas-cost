@@ -9,6 +9,9 @@ const emit = defineEmits(['close'])
 const data = ref(null)
 const loading = ref(true)
 const error = ref('')
+const rates = ref(null)
+const ratesLoading = ref(true)
+const ratesError = ref('')
 
 // Meanings from the MaaS API reference (error-code-chart, ErrorCodeCount)
 const MEANING = {
@@ -30,22 +33,48 @@ const COLOR = {
 }
 const colorOf = (code) => COLOR[code] || (String(code).startsWith('5') ? '#dc2626' : '#f97316')
 
-onMounted(async () => {
-  document.addEventListener('keydown', onKey)
+// Both MaaS chart APIs are limited to 1 call / 20 s each, but on separate quotas, so fetch in parallel
+async function fetchInto(path, target, busy, err) {
   try {
     const q = qs({ start: props.filters.start, end: props.filters.end })
-    data.value = await api(`/api/models/${encodeURIComponent(props.item.service_id)}/error-codes?` + q)
+    target.value = await api(`/api/models/${encodeURIComponent(props.item.service_id)}/${path}?` + q)
   } catch (e) {
-    error.value = e.message
+    err.value = e.message
   } finally {
-    loading.value = false
+    busy.value = false
   }
+}
+onMounted(() => {
+  document.addEventListener('keydown', onKey)
+  fetchInto('rates', rates, ratesLoading, ratesError)
+  fetchInto('error-codes', data, loading, error)
 })
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 function onKey(e) { if (e.key === 'Escape') emit('close') }
 
 const codes = computed(() => [...(data.value?.series || [])].sort((a, b) => b.total - a.total))
 const sum = (prefix) => codes.value.filter((c) => c.code.startsWith(prefix)).reduce((a, c) => a + c.total, 0)
+
+const GRAN = { minute: '分钟', hour: '小时', day: '天' }
+const perBucket = computed(() => rates.value?.granularity === 'minute')
+const fmtRpm = (v) => (v >= 100 ? Math.round(v).toLocaleString() : (+v.toFixed(2)).toString())
+
+function lineOption(values, color, fmt) {
+  const r = rates.value
+  return {
+    tooltip: { trigger: 'axis', confine: true, valueFormatter: fmt },
+    grid: { left: 8, right: 12, top: 12, bottom: 8, containLabel: true },
+    xAxis: { type: 'category', data: r.axis, boundaryGap: false },
+    yAxis: { type: 'value', axisLabel: { formatter: fmt } },
+    series: [{
+      type: 'line', data: values, showSymbol: false, sampling: 'lttb', lineStyle: { width: 1.5, color },
+      itemStyle: { color }, areaStyle: { color, opacity: 0.12 },
+    }],
+  }
+}
+const rpmOption = computed(() => rates.value?.available && lineOption(rates.value.rpm, '#3b82f6', fmtRpm))
+// TPM arrives in thousands of tokens per minute
+const tpmOption = computed(() => rates.value?.available && lineOption(rates.value.tpm, '#10b981', fmtTokens))
 
 const option = computed(() => {
   const d = data.value
@@ -85,12 +114,46 @@ const option = computed(() => {
 
       <div>
         <h4>
+          RPM / TPM
+          <span v-if="rates?.available" class="muted sub">
+            按{{ GRAN[rates.granularity] }}{{ perBucket ? '' : '平均（每分钟）' }}，北京时间{{ perBucket ? '' : '；超过 2 天 MaaS 只给均值，看峰值请缩短到 2 天内' }}
+          </span>
+        </h4>
+        <template v-if="ratesLoading">
+          <SkeletonChart height="180px" />
+        </template>
+        <div v-else-if="ratesError" class="notice">{{ ratesError }}</div>
+        <div v-else-if="!rates.available" class="notice soft">该模型服务已不在当前订阅列表中，MaaS 不再提供它的 RPM / TPM 曲线。</div>
+        <div v-else class="rates">
+          <div>
+            <div class="chart-head">
+              <b>RPM</b><span class="muted">每分钟请求数</span>
+              <span class="grow" />
+              <span class="kv">{{ perBucket ? '峰值' : '最高均值' }} <b>{{ fmtRpm(rates.peak_rpm) }}</b></span>
+              <span class="kv">平均 <b>{{ fmtRpm(rates.avg_rpm) }}</b></span>
+            </div>
+            <EChart :option="rpmOption" height="180px" />
+          </div>
+          <div>
+            <div class="chart-head">
+              <b>TPM</b><span class="muted">每分钟 Tokens</span>
+              <span class="grow" />
+              <span class="kv">{{ perBucket ? '峰值' : '最高均值' }} <b>{{ fmtTokens(rates.peak_tpm) }}</b></span>
+              <span class="kv">平均 <b>{{ fmtTokens(rates.avg_tpm) }}</b></span>
+            </div>
+            <EChart :option="tpmOption" height="180px" />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h4>
           错误码时间分布
           <span v-if="data?.available" class="muted sub">按{{ data.granularity === 'hour' ? '小时' : '天' }}，北京时间</span>
         </h4>
         <template v-if="loading">
           <SkeletonChart height="260px" />
-          <div class="muted small wait">MaaS 限制该接口每 20 秒只能查询 1 次，连续打开多个模型时可能需要等待。</div>
+          <div class="muted small wait">MaaS 限制图表接口每 20 秒只能查询 1 次，连续打开多个模型时可能需要等待。</div>
         </template>
         <div v-else-if="error" class="notice">{{ error }}</div>
         <div v-else-if="!data.available" class="notice soft">
@@ -136,6 +199,11 @@ h4 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: baseline; gap
 .wait { margin-top: 6px; }
 .notice { background: var(--bad-soft); color: var(--bad); border-radius: var(--radius); padding: 8px 14px; font-size: 13px; }
 .notice.soft { background: var(--bg); color: var(--fg-2); }
+.rates { display: flex; flex-direction: column; gap: 12px; }
+.chart-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+.chart-head .grow { flex: 1; }
+.kv { font-size: 12px; color: var(--fg-3); }
+.kv b { color: var(--fg-1); font-variant-numeric: tabular-nums; margin-left: 2px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 @media (max-width: 520px) { .facts { grid-template-columns: repeat(2, 1fr); } .drawer { padding: 16px; } }
 </style>

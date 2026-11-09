@@ -68,8 +68,10 @@ class RateLimiter:
 
 
 _limiter = RateLimiter(config.RATE_LIMIT_PER_MIN)
-# error-code-chart allows one call per 20 s per user; keep a second of margin
+# error-code-chart and show-detail-chart each allow one call per 20 s per user (separate quotas);
+# keep a second of margin
 _error_chart_limiter = RateLimiter(1, 21)
+_detail_chart_limiter = RateLimiter(1, 21)
 
 
 class MaasClient:
@@ -171,3 +173,11 @@ class MaasClient:
                 "time_granularity": granularity, "infer_type": "real_time"}
         return self._request("POST", self._mon(f"/{service_id}/error-code-chart"), body,
                              limiter=_error_chart_limiter, wait_429=21)
+
+    def detail_chart(self, service_id, start_ms, end_ms, granularity, timezone):
+        """Per-bucket metrics incl. rpm/tpm; at minute granularity rpm = requests in that minute."""
+        body = {"service_type": 2, "start_time": start_ms, "end_time": end_ms, "timezone": timezone,
+                "time_granularity": granularity, "infer_type": "real_time"}
+        d = self._request("POST", self._mon(f"/{service_id}/show-detail-chart"), body,
+                          limiter=_detail_chart_limiter, wait_429=21)
+        return d.get("items") or []
